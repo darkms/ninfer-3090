@@ -200,6 +200,28 @@ int test_reasoning_effort() {
                           low_prompt.options.reasoning_effort == ninfer::ReasoningEffort::Low,
                       "Chat Completions low effort did not reach PromptInput");
 
+    Json budget_body                 = base;
+    budget_body["max_tokens"]       = 2048;
+    budget_body["reasoning_effort"] = "medium";
+    budget_body["thinking_budget"]  = 1024;
+    const GenerationRequest budget_request =
+        parse_chat_completion_request(budget_body, default_limits());
+    failures += check(budget_request.thinking_budget == 1024,
+                      "Chat Completions thinking_budget was not parsed");
+    failures += check(translate_options(budget_request).execution.thinking.budget == 1024,
+                      "Chat Completions thinking_budget did not reach Engine options");
+
+    Json too_small               = budget_body;
+    too_small["thinking_budget"] = 512;
+    failures += check(
+        throws_api([&] { (void)parse_chat_completion_request(too_small, default_limits()); }),
+        "Chat Completions accepted thinking_budget below 1024");
+    Json too_large               = budget_body;
+    too_large["thinking_budget"] = 2048;
+    failures += check(
+        throws_api([&] { (void)parse_chat_completion_request(too_large, default_limits()); }),
+        "Chat Completions accepted thinking_budget equal to max_tokens");
+
     Json none                = base;
     none["reasoning_effort"] = "none";
     const ninfer::PromptInput none_prompt =

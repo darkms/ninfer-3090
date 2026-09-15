@@ -608,7 +608,7 @@ int test_tool_use_result_roundtrip() {
 int test_thinking_and_sampling() {
     int failures                = 0;
     Json body                   = {{"model", "m"},
-                                   {"max_tokens", 8},
+                                   {"max_tokens", 2048},
                                    {"temperature", 0.3},
                                    {"top_p", 0.8},
                                    {"top_k", 40},
@@ -627,9 +627,9 @@ int test_thinking_and_sampling() {
                       "Anthropic thinking.type unexpectedly enabled history preservation");
     const ninfer::RequestOptions options = translate_options(req);
     failures +=
-        check(options.execution.requested_output_tokens == 8, "max_tokens reaches Engine options");
-    failures += check(!options.execution.thinking.budget,
-                      "Anthropic budget_tokens unexpectedly became a request-level thinking cap");
+        check(options.execution.requested_output_tokens == 2048, "max_tokens reaches Engine options");
+    failures += check(options.execution.thinking.budget == 1024,
+                      "Anthropic budget_tokens did not become a request-level thinking cap");
     failures += check(options.execution.sampling.temperature == 0.3F &&
                           options.execution.sampling.top_p == 0.8F &&
                           options.execution.sampling.top_k == 40 &&
@@ -663,6 +663,14 @@ int test_thinking_and_sampling() {
     invalid["preserve_thinking"] = "yes";
     failures += check(throws_api([&] { (void)parse_messages_request(invalid, default_limits()); }),
                       "Anthropic accepted non-boolean preserve_thinking");
+    Json too_large               = body;
+    too_large["thinking"]        = Json{{"type", "enabled"}, {"budget_tokens", 2048}};
+    failures += check(throws_api([&] { (void)parse_messages_request(too_large, default_limits()); }),
+                      "Anthropic accepted thinking budget equal to max_tokens");
+    Json too_small                = body;
+    too_small["thinking"]         = Json{{"type", "enabled"}, {"budget_tokens", 512}};
+    failures += check(throws_api([&] { (void)parse_messages_request(too_small, default_limits()); }),
+                      "Anthropic accepted thinking budget below 1024");
     return failures;
 }
 

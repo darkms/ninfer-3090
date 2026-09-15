@@ -495,7 +495,7 @@ void parse_sampling(const Json& body, GenerationRequest& out) {
     // server defaults resolved in translate.cpp.
 }
 
-void parse_thinking(const Json& body, GenerationRequest& out) {
+void parse_thinking(const Json& body, GenerationRequest& out, int effective_max_tokens) {
     if (!body.contains("thinking") || body.at("thinking").is_null()) { return; }
     const Json& thinking = body.at("thinking");
     if (!thinking.is_object() || !thinking.contains("type") || !thinking.at("type").is_string()) {
@@ -504,10 +504,19 @@ void parse_thinking(const Json& body, GenerationRequest& out) {
     // Anthropic thinking modes: "disabled" turns reasoning off; "enabled" and
     // "adaptive" (Claude Code's default extended-thinking mode) turn it on. The
     // Qwen template only exposes an on/off toggle, so any non-"disabled" mode maps
-    // to thinking-on. Unknown future modes default to on rather than 400 so the
-    // adapter tolerates Claude Code's evolving thinking vocabulary.
+    // to thinking-on.
     const std::string type = thinking.at("type").get<std::string>();
     out.enable_thinking    = (type != "disabled");
+    if (type == "enabled") {
+        const std::optional<int> budget = get_int(thinking, "budget_tokens");
+        if (!budget || *budget < 1024) {
+            bad_request("thinking.budget_tokens must be an integer of at least 1024", "thinking");
+        }
+        if (*budget >= effective_max_tokens) {
+            bad_request("thinking.budget_tokens must be less than max_tokens", "thinking");
+        }
+        out.thinking_budget = static_cast<std::uint32_t>(*budget);
+    }
 }
 
 void parse_output_config(const Json& body, GenerationRequest& out) {
@@ -575,7 +584,6 @@ GenerationRequest parse_messages_request(const Json& body, const RequestLimits& 
     parse_messages(body, out);
     parse_stop_sequences(body, out);
     parse_sampling(body, out);
-    parse_thinking(body, out);
     parse_output_config(body, out);
     if (body.contains("preserve_thinking") && !body.at("preserve_thinking").is_null()) {
         if (!body.at("preserve_thinking").is_boolean()) {
@@ -595,6 +603,7 @@ GenerationRequest parse_messages_request(const Json& body, const RequestLimits& 
         out.max_tokens     = limits.default_max_tokens;
         out.max_tokens_set = false;
     }
+    parse_thinking(body, out, out.max_tokens);
     return out;
 }
 
