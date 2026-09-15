@@ -536,6 +536,19 @@ void parse_openai_reasoning_effort(const Json& body, GenerationRequest& out) {
     out.reasoning_effort_param = "reasoning_effort";
 }
 
+void parse_openai_thinking_budget(const Json& body, GenerationRequest& out,
+                                  int effective_max_tokens) {
+    const std::optional<int> budget = get_int(body, "thinking_budget");
+    if (!budget) { return; }
+    if (*budget < 1024) {
+        bad_request("thinking_budget must be an integer of at least 1024", "thinking_budget");
+    }
+    if (*budget >= effective_max_tokens) {
+        bad_request("thinking_budget must be less than max_tokens", "thinking_budget");
+    }
+    out.thinking_budget = static_cast<std::uint32_t>(*budget);
+}
+
 GenerationRequest parse_chat_completion_request(const Json& body, const RequestLimits& limits) {
     require_object(body);
     reject_unsupported_features(body);
@@ -573,6 +586,7 @@ GenerationRequest parse_chat_completion_request(const Json& body, const RequestL
         out.max_tokens     = limits.default_max_tokens;
         out.max_tokens_set = false;
     }
+    parse_openai_thinking_budget(body, out, out.max_tokens);
     return out;
 }
 

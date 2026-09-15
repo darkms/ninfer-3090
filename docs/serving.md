@@ -44,6 +44,9 @@ frozen by `--spec mtp|dflash` and `--draft-tokens`; omitting `--spec` loads neit
 `--lm-head-draft` additionally loads the optimized proposal head. DFlash is 35B-A3B text-only and
 cannot be combined with `--vision`. A later request cannot enable a capability omitted at startup.
 
+`--chat-template-file PATH` replaces the artifact's embedded prompt renderer for this server
+process.
+
 ## Endpoints
 
 | Method and path | Behavior |
@@ -87,6 +90,7 @@ The endpoint supports:
 - `stream_options.include_usage`;
 - function tools, tool choices, assistant tool-call history, and tool-result messages;
 - the top-level `reasoning_effort` field;
+- the non-standard top-level `thinking_budget` field;
 - the `enable_thinking` extension;
 - `chat_template_kwargs.preserve_thinking` and the top-level `preserve_thinking` alias.
 
@@ -112,14 +116,17 @@ not exposed by the loaded template returns HTTP 400 with code
 `reasoning_effort_not_supported` before prompt preparation.
 
 `--default-thinking-budget N` sets a positive process default for requests whose final resolved
-prompt semantics enable thinking. It does not add or reinterpret an HTTP request field: the
-existing `reasoning_effort` and `enable_thinking` inputs still decide whether thinking is enabled,
-and a request resolved to non-thinking receives no cap. `--no-thinking` may coexist with this
-option because a protocol request can explicitly enable thinking. In this phase, Anthropic's
-existing `thinking.budget_tokens` member does not override the process default.
+prompt semantics enable thinking. A request-level Anthropic `thinking.budget_tokens` value overrides
+this default; it must be an integer of at least 1024 and strictly less than that request's
+`max_tokens`. The budget is ignored when thinking is disabled. `--no-thinking` may coexist with
+this option because a protocol request can explicitly enable thinking.
 
-Add `--default-thinking-budget 512` to the startup command to cap model-origin thinking at 512
-tokens for every thinking-enabled request.
+Add `--default-thinking-budget 4096` to the startup command to cap model-origin thinking at 4096
+tokens for every thinking-enabled request that omits a request-level budget.
+
+OpenAI Chat Completions clients may send `thinking_budget` for a request-specific cap. It must be
+at least 1024 and less than `max_tokens`; the same field is used by Pi when the model compatibility
+setting names `thinking_budget` as its `thinkingTokenBudgetField`.
 
 At the cap boundary, Engine first honors a natural `</think>`, stop condition, cancellation, or
 total output/context limit. If thinking remains open, it commits Qwen's canonical early-close
@@ -460,7 +467,9 @@ Ephemeral `cache_control` on the final content block of a user or assistant mess
 normalized message boundary as a private long anchor; a non-final message-block breakpoint is
 rejected because it cannot be represented as an exact Qwen message frontier.
 
-`thinking.type: "disabled"` disables thinking; other supported values enable it.
+`thinking.type: "disabled"` disables thinking; other supported values enable it. With
+`thinking.type: "enabled"`, `thinking.budget_tokens` is accepted as a request-specific cap and
+must be at least 1024 and less than `max_tokens`; when omitted, the process default applies.
 The independent top-level `preserve_thinking` boolean controls closed-turn history and otherwise
 uses the server default.
 

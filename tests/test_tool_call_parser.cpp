@@ -89,6 +89,28 @@ int test_malformed_falls_back_to_text() {
     return failures;
 }
 
+int test_missing_outer_close_is_parsed() {
+    const auto parsed = ninfer::serve::parse_qwen_tool_call_output(
+        "prefix\n"
+        "<tool_call>\n"
+        "<function=write>\n"
+        "<parameter=path>\nfile.txt\n</parameter>\n"
+        "<parameter=content>\nhello\n</parameter>\n"
+        "</function>",
+        64, kNoTypeContracts);
+
+    int failures = 0;
+    failures += check(parsed.is_tool_call_response, "missing outer close parsed as tool response");
+    failures += check(parsed.content == "prefix", "missing outer close kept content prefix");
+    failures += check(parsed.tool_calls.size() == 1, "missing outer close produced one call");
+    if (parsed.tool_calls.size() == 1) {
+        const Json args = Json::parse(parsed.tool_calls[0].arguments_json);
+        failures += check(args.at("path") == "file.txt", "implicit-close path parsed");
+        failures += check(args.at("content") == "hello", "implicit-close content parsed");
+    }
+    return failures;
+}
+
 int test_suffix_after_tool_falls_back_to_text() {
     const std::string text = "<tool_call>\n"
                              "<function=get_weather>\n"
@@ -330,6 +352,7 @@ int main() {
     failures += test_single_call();
     failures += test_multiple_calls_and_json_values();
     failures += test_malformed_falls_back_to_text();
+    failures += test_missing_outer_close_is_parsed();
     failures += test_suffix_after_tool_falls_back_to_text();
     failures += test_configured_name_limit();
     failures += test_declared_strings_are_not_json_sniffed();
