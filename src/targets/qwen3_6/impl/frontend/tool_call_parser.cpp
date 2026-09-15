@@ -272,15 +272,27 @@ ParsedToolCallOutput parse_qwen_tool_call_output(const std::string& text,
         if (pos >= text.size()) { break; }
         if (!starts_with_at(text, pos, kToolOpen)) { return fallback(text); }
         const std::size_t inner_begin = pos + kToolOpen.size();
-        const std::size_t close       = text.find(kToolClose, inner_begin);
-        if (close == std::string::npos) { return fallback(text); }
+        std::size_t close             = text.find(kToolClose, inner_begin);
+        bool implicit_close           = false;
+        if (close == std::string::npos) {
+            // Some Qwen tool-call turns stop after </function> and omit the
+            // outer </tool_call>. Accept that unambiguous terminal form.
+            constexpr std::string_view kFunctionClose = "</function>";
+            close = text.find(kFunctionClose, inner_begin);
+            if (close == std::string::npos) { return fallback(text); }
+            close += kFunctionClose.size();
+            implicit_close = true;
+            std::size_t tail = close;
+            skip_ws(text, tail);
+            if (tail != text.size()) { return fallback(text); }
+        }
         GeneratedToolCall call;
         if (!parse_one_tool_call(std::string_view(text).substr(inner_begin, close - inner_begin),
                                  max_tool_name_length, contracts, call)) {
             return fallback(text);
         }
         out.tool_calls.push_back(std::move(call));
-        pos = close + kToolClose.size();
+        pos = implicit_close ? text.size() : close + kToolClose.size();
     }
 
     if (out.tool_calls.empty()) { return fallback(text); }

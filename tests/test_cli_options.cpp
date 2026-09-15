@@ -32,6 +32,14 @@ int check(bool condition, const char* message) {
 
 int main() {
     int failures = 0;
+    const ninfer::cli::Options templated =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--chat-template-file",
+               "chat.jinja"});
+    failures += check(templated.chat_template_path == "chat.jinja",
+                      "--chat-template-file did not preserve its path");
+    failures += check(ninfer::cli::usage_text("ninfer-cli").find("--chat-template-file") !=
+                          std::string::npos,
+                      "CLI help omits --chat-template-file");
     const ninfer::cli::Options configured =
         parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--thinking-budget", "37"});
     failures += check(configured.thinking_budget == 37,

@@ -57,6 +57,8 @@ int main() {
                       "Responses store defaults mismatch");
     failures += check(!defaults.model_id_override.has_value(),
                       "model id override is unexpectedly configured by default");
+    failures += check(defaults.chat_template_path.empty(),
+                      "template override is unexpectedly configured by default");
     failures += check(!defaults.default_thinking_budget,
                       "thinking budget is unexpectedly limited by default");
     failures += check(
@@ -294,6 +296,9 @@ int main() {
     failures += check(serve_usage_text("ninfer-serve").find("--default-thinking-budget") !=
                           std::string::npos,
                       "serve help omits --default-thinking-budget");
+    failures += check(serve_usage_text("ninfer-serve").find("--chat-template-file") !=
+                          std::string::npos,
+                      "serve help omits --chat-template-file");
     failures += check(serve_usage_text("ninfer-serve").find("--vision") != std::string::npos,
                       "serve help omits --vision");
     failures +=

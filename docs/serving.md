@@ -11,6 +11,7 @@ Anthropic-compatible HTTP endpoints over one resident NInfer Engine.
   --port 8080 \
   --max-context 240000 \
   --kv-capacity 240000 \
+  --chat-template-file /path/to/chat_template.jinja \
   --max-concurrency 2 \
   --kv-dtype int8 \
   --device-state-slots 2 \
@@ -43,6 +44,11 @@ allocated, and media requests and token-count requests fail with HTTP 400 `visio
 frozen by `--spec mtp|dflash` and `--draft-tokens`; omitting `--spec` loads neither backend.
 `--lm-head-draft` additionally loads the optimized proposal head. DFlash is 35B-A3B text-only and
 cannot be combined with `--vision`. A later request cannot enable a capability omitted at startup.
+
+`--chat-template-file PATH` replaces the artifact's embedded prompt renderer for this server
+process. The file is read and compiled once before the Engine accepts requests and applies equally
+to Chat Completions, Responses, and Messages. An unreadable, empty, malformed, or unsupported
+template prevents startup; NInfer does not silently use the artifact template instead.
 
 ## Endpoints
 
@@ -654,6 +660,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--lm-head-draft` | optimized proposal head | off |
 | `--default-max-tokens N` | output limit when omitted by a request | `8192` |
 | `--default-thinking-budget N` | positive thinking cap inherited by thinking-enabled requests | unset |
+| `--chat-template-file PATH` | self-contained Jinja prompt-template override loaded at startup | artifact template |
 | `--vision` | enable media input and load Vision GPU allocations | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-prefix-reuse` | disable compatible-prefix caching | prefix reuse on |

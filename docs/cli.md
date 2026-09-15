@@ -69,6 +69,22 @@ output capacity for the inserted suffix and the answer:
   --lm-head-draft
 ```
 
+## Chat templates
+
+By default, the Engine validates and uses `frontend/chat_template.jinja` embedded in the loaded
+artifact. Pass `--chat-template-file PATH` to replace that prompt renderer for this Engine startup:
+
+```bash
+./build/apps/ninfer models/qwen3_6_27b.ninfer \
+  --chat-template-file /path/to/chat_template.jinja \
+  --prompt "Return one sentence."
+```
+
+The file is read and compiled before prompt preparation. An unreadable, empty, malformed, or
+unsupported template stops startup; NInfer never silently falls back to the artifact template.
+Custom templates use the bundled Minja LLM chat-template renderer and receive the standard
+`messages`, `tools`, `add_generation_prompt`, `enable_thinking`, and preservation values.
+
 ## Startup memory profile
 
 GPU residency is frozen when the Engine starts:
@@ -196,6 +212,7 @@ The table lists executable defaults. The examples above select FP8 KV and MTP3.
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-thinking` | disable thinking in prompt rendering | thinking on |
 | `--thinking-budget N` | positive model-origin thinking-token cap; omitted means unlimited | unset |
+| `--chat-template-file PATH` | self-contained Jinja prompt-template override loaded at startup | artifact template |
 | `--reasoning-effort low\|medium\|xhigh` | select an effort exposed by the loaded chat template | template default |
 | `--greedy` | exact argmax decoding | off |
 | `--temperature F` | sampling temperature override | registered model/mode default |
