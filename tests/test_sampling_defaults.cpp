@@ -64,7 +64,7 @@ int main() {
         .top_k            = 20,
         .top_p            = 0.95F,
         .min_p            = 0.0F,
-        .presence_penalty = 1.5F,
+        .presence_penalty = 0.0F,
     };
 
     failures += check(same_preset(qwen3_6.thinking, dense_thinking),
