@@ -121,6 +121,27 @@ int test_request_envelope_and_sampling() {
     return failures;
 }
 
+int test_thinking_budget() {
+    int failures = 0;
+    Json body     = base_request();
+    body["max_tokens"]      = 2048;
+    body["thinking_budget"] = 1024;
+    const OpenAIChatRequest request = parse(body);
+    failures += check(request.generation.thinking_budget == 1024,
+                      "OpenAI thinking_budget reaches GenerationRequest");
+
+    Json too_small             = body;
+    too_small["thinking_budget"] = 512;
+    failures += check(api_error([&] { (void)parse(too_small); }).param == "thinking_budget",
+                      "OpenAI thinking_budget rejects values below 1024");
+
+    Json too_large             = body;
+    too_large["thinking_budget"] = 2048;
+    failures += check(api_error([&] { (void)parse(too_large); }).param == "thinking_budget",
+                      "OpenAI thinking_budget leaves room for an answer");
+    return failures;
+}
+
 int test_standard_field_policy() {
     int failures  = 0;
     auto rejected = [&](const char* key, Json value, const char* code) {
@@ -666,6 +687,7 @@ int test_common_objects() {
 int main() {
     int failures = 0;
     failures += test_request_envelope_and_sampling();
+    failures += test_thinking_budget();
     failures += test_standard_field_policy();
     failures += test_constrained_decoding_extensions();
     failures += test_tools();

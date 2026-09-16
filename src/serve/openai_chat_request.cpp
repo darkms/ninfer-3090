@@ -873,6 +873,18 @@ void parse_output_limit(const Json& body, const RequestLimits& limits, OpenAICha
     }
 }
 
+void parse_thinking_budget(const Json& body, OpenAIChatRequest& output) {
+    const std::optional<int> budget = optional_int(body, "thinking_budget");
+    if (!budget) { return; }
+    if (*budget < 1024) {
+        bad_request("thinking_budget must be an integer of at least 1024", "thinking_budget");
+    }
+    if (*budget >= output.generation.max_tokens) {
+        bad_request("thinking_budget must be less than max_tokens", "thinking_budget");
+    }
+    output.generation.thinking_budget = static_cast<std::uint32_t>(*budget);
+}
+
 } // namespace
 
 OpenAIChatRequest parse_chat_completion_request(const Json& body, const RequestLimits& limits) {
@@ -896,6 +908,7 @@ OpenAIChatRequest parse_chat_completion_request(const Json& body, const RequestL
     parse_sampling(body, output.generation);
     parse_stream_options(body, output);
     parse_output_limit(body, limits, output);
+    parse_thinking_budget(body, output);
     parse_reasoning_effort(body, output.generation);
     const TemplateOptions template_options = parse_template_options(body);
     output.generation.enable_thinking      = template_options.enable_thinking;
