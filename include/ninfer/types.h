@@ -104,6 +104,7 @@ struct ContextCostOptions {
 
 struct EngineOptions {
     std::filesystem::path artifact_path;
+    std::filesystem::path chat_template_path;
     int device                         = 0;
     std::uint32_t max_context          = 2048; // Exact logical ceiling of each request.
     KvCapacityPolicy kv_capacity       = KvCapacityPolicy::explicit_capacity(2048);

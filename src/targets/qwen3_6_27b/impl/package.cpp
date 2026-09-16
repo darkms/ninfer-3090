@@ -121,6 +121,7 @@ Package::Frontend Package::make_frontend(const LoadedModel& model, const EngineO
         model.impl_->data.frontend,
         qwen3_6::FrontendOptions{
             .vision_enabled                = model.impl_->data.runtime.features.vision,
+            .chat_template_path            = options.chat_template_path,
             .max_context                   = options.max_context,
             .media_cache_bytes             = options.media_cache_bytes,
             .media_live_bytes              = options.media_live_bytes,
