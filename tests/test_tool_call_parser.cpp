@@ -89,6 +89,32 @@ int test_malformed_falls_back_to_text() {
     return failures;
 }
 
+int test_reasoning_channel_tool_payload() {
+    const ninfer::serve::ParsedToolCallOutput parsed =
+        ninfer::serve::parse_qwen_tool_call_output(
+            "I need to inspect the database secret.\n"
+            "<tool_call>\n"
+            "<function=bash>\n"
+            "<parameter=command>\n"
+            "kubectl get secret\n"
+            "</parameter>\n"
+            "</function>\n"
+            "</tool_call>",
+            64, kNoTypeContracts);
+
+    int failures = 0;
+    failures += check(parsed.is_tool_call_response,
+                      "tool payload from reasoning channel was not parsed");
+    failures += check(parsed.content == "I need to inspect the database secret.",
+                      "reasoning prefix was not retained");
+    failures += check(parsed.tool_calls.size() == 1 && parsed.tool_calls[0].name == "bash",
+                      "reasoning-channel tool name was not parsed");
+    const Json args = Json::parse(parsed.tool_calls.at(0).arguments_json);
+    failures += check(args.at("command") == "kubectl get secret",
+                      "reasoning-channel tool argument was not parsed");
+    return failures;
+}
+
 int test_suffix_after_tool_falls_back_to_text() {
     const std::string text = "<tool_call>\n"
                              "<function=get_weather>\n"
@@ -330,6 +356,7 @@ int main() {
     failures += test_single_call();
     failures += test_multiple_calls_and_json_values();
     failures += test_malformed_falls_back_to_text();
+    failures += test_reasoning_channel_tool_payload();
     failures += test_suffix_after_tool_falls_back_to_text();
     failures += test_configured_name_limit();
     failures += test_declared_strings_are_not_json_sniffed();
