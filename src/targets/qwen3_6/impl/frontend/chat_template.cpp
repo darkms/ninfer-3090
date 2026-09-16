@@ -458,19 +458,6 @@ minja::Value jinja_context(const std::vector<ChatMessage>& messages,
     return minja::Value(values);
 }
 
-std::optional<RewriteCheckpointByteSpec> jinja_rewrite_checkpoint(
-    std::string_view rendered, const ChatRenderOptions& options) {
-    constexpr std::string_view kAssistantOpener = "<|im_start|>assistant\n";
-    const std::size_t opener = rendered.rfind(kAssistantOpener);
-    if (opener == std::string_view::npos || opener == 0) { return std::nullopt; }
-
-    return RewriteCheckpointByteSpec{
-        .kind = options.preserve_thinking.value_or(true)
-                    ? RewriteCheckpointKind::ResponseReplay
-                    : RewriteCheckpointKind::TurnClosure,
-        .offset = opener};
-}
-
 } // namespace
 
 class CompiledChatTemplate::JinjaTemplate {
@@ -496,7 +483,7 @@ public:
             const std::string rendered =
                 template_->render(minja::Context::make(jinja_context(messages, options)));
             return RenderedChat{.text                 = rendered,
-                                .rewrite_checkpoint = jinja_rewrite_checkpoint(rendered, options)};
+                                .rewrite_checkpoint = std::nullopt};
         } catch (const std::exception& error) {
             throw std::invalid_argument("failed to render Jinja chat template '" + source_name_ +
                                         "': " + error.what());

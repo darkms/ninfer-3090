@@ -89,22 +89,6 @@ int main() {
     failures += check(!rendered.rewrite_checkpoint.has_value(),
                       "custom Jinja template unexpectedly exposed a rewrite checkpoint");
 
-    const fi::CompiledChatTemplate checkpoint_template = fi::CompiledChatTemplate::compile_jinja(
-        "stable\n<|im_start|>assistant\n", "checkpoint-template");
-    fi::ChatRenderOptions checkpoint_options;
-    checkpoint_options.preserve_thinking = false;
-    const fi::RenderedChat checkpoint =
-        checkpoint_template.render({text_message(ninfer::ChatRole::User, "hello")},
-                                   std::move(checkpoint_options));
-    failures += check(checkpoint.rewrite_checkpoint.has_value(),
-                      "custom Jinja template did not expose a rewrite checkpoint");
-    if (checkpoint.rewrite_checkpoint) {
-        failures += check(checkpoint.rewrite_checkpoint->kind == fi::RewriteCheckpointKind::TurnClosure,
-                          "custom Jinja template selected the wrong rewrite checkpoint kind");
-        failures += check(checkpoint.rewrite_checkpoint->offset == std::string("stable\n").size(),
-                          "custom Jinja template selected the wrong rewrite checkpoint offset");
-    }
-
     bool malformed_rejected = false;
     try {
         (void)fi::CompiledChatTemplate::compile_jinja("{% if", "malformed-template");
