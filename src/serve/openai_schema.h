@@ -24,6 +24,7 @@ GenerationRequest parse_chat_completion_request(const nlohmann::json& body,
                                                 const RequestLimits& limits);
 
 std::optional<bool> parse_openai_preserve_thinking(const nlohmann::json& body);
+void parse_openai_template_kwargs(const nlohmann::json& body, GenerationRequest& out);
 
 // Non-streaming chat completion response body (JSON string). When `reasoning` is
 // non-empty it is attached as `message.reasoning_content` (the DeepSeek/vLLM-style
