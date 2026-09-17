@@ -911,6 +911,47 @@ int test_rewrite_checkpoint_trace() {
     return failures;
 }
 
+int test_generic_tool_loop_warning() {
+    const auto assistant_call = [](std::string name, std::string arguments,
+                                   std::string reasoning = {}) {
+        fi::ChatMessage message = chat_message(ninfer::ChatRole::Assistant, "");
+        message.reasoning_content = std::move(reasoning);
+        message.tool_calls.push_back(
+            {.id = "", .name = std::move(name), .arguments_json = std::move(arguments)});
+        return message;
+    };
+    fi::ChatRenderOptions options;
+    options.add_generation_prompt = false;
+    options.preserve_thinking   = true;
+
+    const std::string repeated = render_chat_text(
+        {chat_message(ninfer::ChatRole::User, "question"),
+         assistant_call("lookup", R"({"city":"Paris"})", "first thought"),
+         chat_message(ninfer::ChatRole::Tool, "ok"),
+         assistant_call("lookup", R"({"city":"Paris"})", "second thought"),
+         chat_message(ninfer::ChatRole::Tool, "ok")},
+        options);
+    int failures = check(repeated.find("LOOP_DETECTED") != std::string::npos,
+                          "identical successful tool calls did not produce a loop warning");
+    failures += check(repeated.find("cycle length 1") != std::string::npos,
+                      "identical tool loop did not report its period");
+    failures += check(repeated.find("second thought") != std::string::npos,
+                      "loop warning incorrectly removed assistant reasoning");
+
+    const std::string alternating = render_chat_text(
+        {chat_message(ninfer::ChatRole::User, "question"),
+         assistant_call("first", R"({"value":1})"), chat_message(ninfer::ChatRole::Tool, "ok"),
+         assistant_call("second", R"({"value":2})"), chat_message(ninfer::ChatRole::Tool, "ok"),
+         assistant_call("first", R"({"value":1})"), chat_message(ninfer::ChatRole::Tool, "ok"),
+         assistant_call("second", R"({"value":2})"), chat_message(ninfer::ChatRole::Tool, "ok")},
+        options);
+    failures += check(alternating.find("LOOP_DETECTED") != std::string::npos,
+                      "alternating successful tool loop did not produce a warning");
+    failures += check(alternating.find("cycle length 2") != std::string::npos,
+                      "alternating tool loop did not report its period");
+    return failures;
+}
+
 int test_adjacent_tool_message_boundary() {
     fi::ChatMessage assistant = chat_message(ninfer::ChatRole::Assistant, "");
     assistant.tool_calls.push_back(
@@ -1883,6 +1924,7 @@ int main() {
     failures += test_ordered_instruction_turns();
     failures += test_reasoning_effort_chat_template();
     failures += test_rewrite_checkpoint_trace();
+    failures += test_generic_tool_loop_warning();
     failures += test_adjacent_tool_message_boundary();
     failures += test_official_resource_guards();
     failures += test_text_and_image_prepare(frontend);

@@ -7,10 +7,12 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 
 namespace ninfer::targets::qwen3_6::frontend_internal {
 namespace {
@@ -372,6 +374,8 @@ bool external_tool_error(std::string_view content) {
          head.find("traceback (most recent call last):") != std::string_view::npos ||
          head.find("command not found") != std::string_view::npos ||
          head.find("invalid syntax") != std::string_view::npos || head.find("fatal:") != std::string_view::npos ||
+         head.find("timed out") != std::string_view::npos ||
+         head.find("deadline exceeded") != std::string_view::npos ||
          ((head.find("exit code: ") != std::string_view::npos ||
            head.find("process exited with code") != std::string_view::npos ||
            head.find("command exited with code") != std::string_view::npos) &&
@@ -382,6 +386,53 @@ bool external_tool_error(std::string_view content) {
     const bool weak_suppressed = head.find("$ ") != std::string_view::npos ||
                                  head.find("took ") != std::string_view::npos || content.size() >= 600;
     return !is_code_or_grep && (strong_error || (weak_error && !weak_suppressed));
+}
+
+using ToolCallSignature = std::pair<std::string, std::string>;
+using ToolCallTurn      = std::vector<ToolCallSignature>;
+
+std::string canonical_tool_arguments(std::string_view arguments_json) {
+    const nlohmann::json parsed = nlohmann::json::parse(arguments_json, nullptr, false);
+    return parsed.is_discarded() ? std::string(arguments_json) : parsed.dump();
+}
+
+ToolCallTurn tool_call_turn_signature(const std::vector<ToolCall>& tool_calls) {
+    ToolCallTurn signature;
+    signature.reserve(tool_calls.size());
+    for (const ToolCall& call : tool_calls) {
+        signature.emplace_back(call.name, canonical_tool_arguments(call.arguments_json));
+    }
+    return signature;
+}
+
+bool same_tool_call_turn(const ToolCallTurn& left, const ToolCallTurn& right) {
+    return left == right;
+}
+
+std::optional<std::size_t> repeated_tool_cycle_period(const std::vector<ToolCallTurn>& history,
+                                                      const ToolCallTurn& current) {
+    if (current.empty()) { return std::nullopt; }
+    const std::size_t turn_count = history.size() + 1U;
+    // ponytail: O(n^2) over assistant tool turns; histories are bounded by the request context,
+    // and keeping every period avoids a false negative for longer but otherwise valid cycles.
+    const std::size_t max_period = turn_count / 2U;
+    for (std::size_t period = 1; period <= max_period; ++period) {
+        const std::size_t first = turn_count - period * 2U;
+        bool repeated = true;
+        for (std::size_t offset = 0; offset < period; ++offset) {
+            const ToolCallTurn& previous = history[first + offset];
+            const std::size_t repeated_index = first + period + offset;
+            const ToolCallTurn& repeated_turn = repeated_index == history.size()
+                                                     ? current
+                                                     : history[repeated_index];
+            if (!same_tool_call_turn(previous, repeated_turn)) {
+                repeated = false;
+                break;
+            }
+        }
+        if (repeated) { return period; }
+    }
+    return std::nullopt;
 }
 
 std::string parameter_text(const OrderedJson& value) {
@@ -640,8 +691,9 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
     int video_count         = 0;
     std::size_t media_count = 0;
     int consecutive_tool_errors = 0;
-    std::vector<std::pair<std::string, std::string>> last_assistant_tool_calls;
-    bool suppress_thinking_after_duplicate = false;
+    std::vector<ToolCallTurn> assistant_tool_call_history;
+    std::optional<std::size_t> pending_tool_loop_period;
+    bool loop_warning_emitted = false;
     for (std::size_t i = 0; i < messages.size(); ++i) {
         const ChatMessage& message = messages[i];
         if (i < message_begin) { continue; }
@@ -658,9 +710,10 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         if (message.role == ChatRole::User) {
             if (external_template) {
                 consecutive_tool_errors = 0;
-                last_assistant_tool_calls.clear();
-                suppress_thinking_after_duplicate = false;
             }
+            assistant_tool_call_history.clear();
+            pending_tool_loop_period.reset();
+            loop_warning_emitted = false;
             rendered.append_template("<|im_start|>user\n");
             rendered.append(content);
             rendered.append_template("<|im_end|>\n");
@@ -679,6 +732,15 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
             if (opens_group) { rendered.append_template("<|im_start|>user"); }
             rendered.append_template("\n<tool_response>\n");
             rendered.append(content);
+            if (pending_tool_loop_period && !loop_warning_emitted) {
+                rendered.append_template(
+                    "\n\n⚠️ SYSTEM WARNING: LOOP_DETECTED. The same tool-call sequence has "
+                    "repeated (cycle length " + std::to_string(*pending_tool_loop_period) +
+                    "). Do not repeat any call from this cycle. Stop calling tools and provide "
+                    "a final answer, or use a genuinely different action justified by the "
+                    "latest tool response.");
+                loop_warning_emitted = true;
+            }
             if (external_template && consecutive_tool_errors >= 2) {
                 rendered.append_template(
                     "\n\n⚠️ SYSTEM WARNING: " + std::to_string(consecutive_tool_errors) +
@@ -692,6 +754,10 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
             rendered.append_template("\n</tool_response>");
             if (closes_group) { rendered.append_template("<|im_end|>\n"); }
             message_boundaries[i + 1U] = rendered.size();
+            if (closes_group) {
+                pending_tool_loop_period.reset();
+                loop_warning_emitted = false;
+            }
             continue;
         }
 
@@ -700,17 +766,18 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         }
 
         // assistant
-        bool duplicate_tool_call = false;
-        if (external_template && consecutive_tool_errors != 0 &&
-            message.tool_calls.size() == last_assistant_tool_calls.size() &&
-            !message.tool_calls.empty()) {
-            duplicate_tool_call = std::equal(
-                message.tool_calls.begin(), message.tool_calls.end(), last_assistant_tool_calls.begin(),
-                [](const ToolCall& call, const auto& previous) {
-                    return call.name == previous.first && call.arguments_json == previous.second;
-                });
+        if (message.tool_calls.empty()) {
+            assistant_tool_call_history.clear();
+            pending_tool_loop_period.reset();
+            loop_warning_emitted = false;
+        } else {
+            const ToolCallTurn current_tool_calls =
+                tool_call_turn_signature(message.tool_calls);
+            pending_tool_loop_period =
+                repeated_tool_cycle_period(assistant_tool_call_history, current_tool_calls);
+            loop_warning_emitted = false;
+            assistant_tool_call_history.push_back(current_tool_calls);
         }
-        if (duplicate_tool_call) { suppress_thinking_after_duplicate = true; }
         RenderedFragment reasoning;
         RenderedFragment body = content;
         if (!message.reasoning_content.empty()) {
@@ -722,8 +789,7 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         }
         reasoning = trim_ascii_whitespace(reasoning);
 
-        const bool keep_thinking = !suppress_thinking_after_duplicate &&
-                                   (preserve_thinking || (static_cast<long>(i) > last_query_index));
+        const bool keep_thinking = preserve_thinking || (static_cast<long>(i) > last_query_index);
         if (!preserve_thinking && !rewrite_checkpoint && static_cast<long>(i) > last_query_index) {
             // Closing the current turn may rewrite everything beginning with this assistant
             // segment. Keep the stable history before the opener recoverable; retaining the
@@ -756,13 +822,6 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         }
         rendered.append_template("<|im_end|>\n");
         message_boundaries[i + 1U] = rendered.size();
-        if (external_template) {
-            last_assistant_tool_calls.clear();
-            last_assistant_tool_calls.reserve(message.tool_calls.size());
-            for (const ToolCall& call : message.tool_calls) {
-                last_assistant_tool_calls.emplace_back(call.name, call.arguments_json);
-            }
-        }
     }
 
     if (options.add_generation_prompt) {
