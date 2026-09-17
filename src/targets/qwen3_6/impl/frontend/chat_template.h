@@ -129,6 +129,7 @@ struct RenderedChat {
 enum class ChatTemplateSemantics : std::uint8_t {
     ThinkingToggle,
     ReasoningEffort,
+    ExternalReasoningEffort,
 };
 
 class CompiledChatTemplate {

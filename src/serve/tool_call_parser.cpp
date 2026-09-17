@@ -214,11 +214,18 @@ bool parse_one_tool_call(std::string_view block, std::size_t max_name_length,
     if (function_end == std::string_view::npos) { return false; }
     const std::string_view params = block.substr(pos, function_end - pos);
     Json args                     = Json::object();
-    std::size_t param_pos         = 0;
-    for (;;) {
-        skip_ws(params, param_pos);
-        if (param_pos >= params.size()) { break; }
-        if (!parse_parameter(params, param_pos, args, name, contracts)) { return false; }
+    const std::string raw_params = trim_ascii(params);
+    if (!raw_params.empty() && (raw_params.front() == '{' || raw_params.front() == '[')) {
+        Json parsed = Json::parse(raw_params, nullptr, false);
+        if (parsed.is_discarded() || !parsed.is_object()) { return false; }
+        args = std::move(parsed);
+    } else {
+        std::size_t param_pos = 0;
+        for (;;) {
+            skip_ws(params, param_pos);
+            if (param_pos >= params.size()) { break; }
+            if (!parse_parameter(params, param_pos, args, name, contracts)) { return false; }
+        }
     }
 
     pos = function_end + kFunctionClose.size();

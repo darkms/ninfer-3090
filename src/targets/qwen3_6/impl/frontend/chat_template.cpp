@@ -27,8 +27,9 @@ constexpr Sha256Digest kReasoningEffortTemplateDigest{
     0xd3, 0xe2, 0xa7, 0x25, 0xb6, 0xc2, 0x58, 0x6a, 0xaa, 0x3a, 0x8a, 0xf9, 0xd7, 0xa8, 0x10, 0x41,
 };
 
-// The deployed external template is a compatible reasoning-effort variant. Keep its
-// fingerprint explicit so --chat-template-file remains a validated, persistent override.
+// The deployed external template has its own prompt contract. Keep its fingerprint explicit so
+// --chat-template-file remains a validated, persistent override without pretending it is the
+// built-in reasoning-effort template.
 constexpr Sha256Digest kExternalReasoningEffortTemplateDigest{
     0xe5, 0x76, 0x84, 0xba, 0xe4, 0x15, 0x62, 0x11, 0xa5, 0x54, 0x73, 0xc5, 0xa6, 0x3b, 0xe9, 0x76,
     0xa4, 0x05, 0xa3, 0x7a, 0xb5, 0xbe, 0x5a, 0xe0, 0xe5, 0xab, 0xf1, 0xdf, 0x53, 0x49, 0xc4, 0xb2,
@@ -246,6 +247,46 @@ constexpr std::string_view kToolInstructions =
     "knowledge and do not tell the user about function calls\n"
     "</IMPORTANT>";
 
+constexpr std::string_view kExternalToolInstructionsThinking =
+    "\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n"
+    "<think>\nBrief explanation of tool call\n</think>\n"
+    "<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\n"
+    "value_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second "
+    "parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n"
+    "<IMPORTANT>\nReminder:\n"
+    "- You can use the <think></think> block to plan your next tool call OR to synthesize data "
+    "and formulate your final response to the user.\n"
+    "- ALL explanation and reasoning MUST be placed strictly inside the <think></think> block.\n"
+    "- Function calls MUST follow the specified format: an inner <function=...></function> block "
+    "must be nested within <tool_call></tool_call> XML tags.\n"
+    "- If you choose to call a tool, you MUST output the <tool_call> block IMMEDIATELY after "
+    "thinking, with NO conversational text before it.\n"
+    "- The <tool_call> and <function> tags MUST be at the very beginning of a new line, with NO "
+    "spaces or indentation before them.\n"
+    "- To call multiple functions, output a separate, completely closed <tool_call></tool_call> "
+    "block for EACH function. Do NOT nest <tool_call> blocks.\n"
+    "- If you have all necessary data, provide your final answer directly to the user without any "
+    "tool call.\n"
+    "</IMPORTANT>";
+
+constexpr std::string_view kExternalToolInstructionsNoThinking =
+    "\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n"
+    "<tool_call>\n<function=example_function_name>\n<parameter=example_parameter_1>\n"
+    "value_1\n</parameter>\n<parameter=example_parameter_2>\nThis is the value for the second "
+    "parameter\nthat can span\nmultiple lines\n</parameter>\n</function>\n</tool_call>\n\n"
+    "<IMPORTANT>\nReminder:\n"
+    "- Function calls MUST follow the specified format: an inner <function=...></function> block "
+    "must be nested within <tool_call></tool_call> XML tags.\n"
+    "- If you choose to call a tool, you MUST output the <tool_call> block IMMEDIATELY, with NO "
+    "conversational text before it.\n"
+    "- The <tool_call> and <function> tags MUST be at the very beginning of a new line, with NO "
+    "spaces or indentation before them.\n"
+    "- To call multiple functions, output a separate, completely closed <tool_call></tool_call> "
+    "block for EACH function. Do NOT nest <tool_call> blocks.\n"
+    "- If you have all necessary data, provide your final answer directly to the user without any "
+    "tool call.\n"
+    "</IMPORTANT>";
+
 std::string tojson_text(const OrderedJson& value) {
     if (value.is_array()) {
         std::string rendered = "[";
@@ -271,17 +312,96 @@ std::string tojson_text(const OrderedJson& value) {
     return value.dump();
 }
 
+std::string tojson_text_sorted(const OrderedJson& value) {
+    if (value.is_array()) {
+        std::string rendered = "[";
+        for (std::size_t index = 0; index < value.size(); ++index) {
+            if (index != 0) { rendered += ", "; }
+            rendered += tojson_text_sorted(value[index]);
+        }
+        rendered += "]";
+        return rendered;
+    }
+    if (value.is_object()) {
+        std::vector<std::string> keys;
+        keys.reserve(value.size());
+        for (auto it = value.begin(); it != value.end(); ++it) { keys.emplace_back(it.key()); }
+        std::sort(keys.begin(), keys.end());
+
+        std::string rendered = "{";
+        for (std::size_t index = 0; index < keys.size(); ++index) {
+            if (index != 0) { rendered += ", "; }
+            rendered += OrderedJson(keys[index]).dump();
+            rendered += ": ";
+            rendered += tojson_text_sorted(value.at(keys[index]));
+        }
+        rendered += "}";
+        return rendered;
+    }
+    return value.dump();
+}
+
+bool external_tool_error(std::string_view content) {
+    std::string lower(content);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+    const std::string_view head =
+        std::string_view(lower).substr(0, std::min<std::size_t>(120, lower.size()));
+    const bool is_code_or_grep = lower.find("throw new ") != std::string::npos ||
+                                 lower.find("throw error") != std::string::npos ||
+                                 lower.find("console.error") != std::string::npos ||
+                                 lower.find("logger.error") != std::string::npos ||
+                                 lower.find("logging.error") != std::string::npos ||
+                                 head.find("import ") != std::string_view::npos ||
+                                 head.find("def ") != std::string_view::npos ||
+                                 head.find("function ") != std::string_view::npos;
+    const bool exit_code_zero = head.find("exit code: 0") != std::string_view::npos ||
+                                head.find("process exited with code 0") != std::string_view::npos;
+    const bool error_field_ok = head.find("\"error\": null") != std::string_view::npos ||
+                                head.find("\"error\":null") != std::string_view::npos ||
+                                head.find("\"error\": false") != std::string_view::npos ||
+                                head.find("\"error\":false") != std::string_view::npos ||
+                                head.find("\"error\": \"\"") != std::string_view::npos ||
+                                head.find("\"error\":\"\"") != std::string_view::npos;
+    const bool strong_error =
+        ((head.find("\"error\":") != std::string_view::npos && !error_field_ok) ||
+         head.find("\"status\": \"error\"") != std::string_view::npos ||
+         head.find("\"status\":\"error\"") != std::string_view::npos ||
+         head.find("traceback (most recent call last):") != std::string_view::npos ||
+         head.find("command not found") != std::string_view::npos ||
+         head.find("invalid syntax") != std::string_view::npos || head.find("fatal:") != std::string_view::npos ||
+         ((head.find("exit code: ") != std::string_view::npos ||
+           head.find("process exited with code") != std::string_view::npos) &&
+          !exit_code_zero) ||
+         head.starts_with("exception:") || head.starts_with("failed to "));
+    const bool weak_error = head.find("error:") != std::string_view::npos ||
+                            head.find("err!") != std::string_view::npos;
+    const bool weak_suppressed = head.find("$ ") != std::string_view::npos ||
+                                 head.find("took ") != std::string_view::npos || content.size() >= 600;
+    return !is_code_or_grep && (strong_error || (weak_error && !weak_suppressed));
+}
+
 std::string parameter_text(const OrderedJson& value) {
     if (value.is_string()) { return value.get<std::string>(); }
     return tojson_text(value);
 }
 
-RenderedFragment render_tool_call(const ToolCall& call, bool allow_empty_arguments) {
+RenderedFragment render_tool_call(const ToolCall& call, bool allow_empty_arguments,
+                                  bool preserve_raw_arguments) {
     RenderBuilder rendered;
     if (allow_empty_arguments && call.arguments_json.empty()) {
         rendered.append_template("<tool_call>\n<function=");
         rendered.append_literal(call.name);
         rendered.append_template(">\n</function>\n</tool_call>");
+        return std::move(rendered).release();
+    }
+    if (preserve_raw_arguments) {
+        rendered.append_template("<tool_call>\n<function=");
+        rendered.append_literal(call.name);
+        rendered.append_template(">\n");
+        rendered.append_literal(call.arguments_json);
+        rendered.append_template("</function>\n</tool_call>");
         return std::move(rendered).release();
     }
     OrderedJson args = OrderedJson::parse(call.arguments_json);
@@ -311,7 +431,9 @@ struct RenderedToolsSystemBlock {
 
 RenderedToolsSystemBlock render_tools_system_block(const std::vector<std::string>& tool_jsons,
                                                    const RenderedFragment& leading_instruction,
-                                                   std::string_view reasoning_instructions) {
+                                                   std::string_view reasoning_instructions,
+                                                   bool external_template,
+                                                   bool enable_thinking) {
     RenderedToolsSystemBlock out;
     RenderBuilder rendered;
     out.tool_boundaries.reserve(tool_jsons.size());
@@ -323,11 +445,17 @@ RenderedToolsSystemBlock render_tools_system_block(const std::vector<std::string
     rendered.append_template("# Tools\n\nYou have access to the following functions:\n\n<tools>");
     for (const std::string& tool : tool_jsons) {
         rendered.append_template("\n");
-        rendered.append_literal(tojson_text(OrderedJson::parse(tool)));
+        rendered.append_literal(external_template ? tojson_text_sorted(OrderedJson::parse(tool))
+                                                   : tojson_text(OrderedJson::parse(tool)));
         out.tool_boundaries.push_back(rendered.size());
     }
     rendered.append_template("\n</tools>");
-    rendered.append_template(kToolInstructions);
+    if (external_template) {
+        rendered.append_template(enable_thinking ? kExternalToolInstructionsThinking
+                                                  : kExternalToolInstructionsNoThinking);
+    } else {
+        rendered.append_template(kToolInstructions);
+    }
     if (!leading_instruction.text.empty()) {
         rendered.append_template("\n\n");
         out.instruction_begin = rendered.size();
@@ -416,7 +544,7 @@ CompiledChatTemplate CompiledChatTemplate::resolve(std::string_view source) {
         return CompiledChatTemplate(ChatTemplateSemantics::ReasoningEffort);
     }
     if (digest == kExternalReasoningEffortTemplateDigest) {
-        return CompiledChatTemplate(ChatTemplateSemantics::ReasoningEffort);
+        return CompiledChatTemplate(ChatTemplateSemantics::ExternalReasoningEffort);
     }
     throw std::invalid_argument("unsupported frontend/chat_template.jinja (sha256 " +
                                 sha256_hex(digest) + ")");
@@ -425,7 +553,7 @@ CompiledChatTemplate CompiledChatTemplate::resolve(std::string_view source) {
 PromptCapabilities CompiledChatTemplate::capabilities() const noexcept {
     PromptCapabilities result;
     result.enable_thinking = true;
-    if (semantics_ == ChatTemplateSemantics::ReasoningEffort) {
+    if (semantics_ != ChatTemplateSemantics::ThinkingToggle) {
         result.reasoning_effort.low            = true;
         result.reasoning_effort.medium         = true;
         result.reasoning_effort.xhigh          = true;
@@ -438,7 +566,8 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
                                           ChatRenderOptions options) const {
     if (messages.empty()) { throw std::invalid_argument("chat messages must not be empty"); }
 
-    const bool effort_template = semantics_ == ChatTemplateSemantics::ReasoningEffort;
+    const bool effort_template = semantics_ != ChatTemplateSemantics::ThinkingToggle;
+    const bool external_template = semantics_ == ChatTemplateSemantics::ExternalReasoningEffort;
     const std::string_view reasoning_instructions =
         resolve_reasoning_instructions(semantics_, options);
 
@@ -463,7 +592,8 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
     const bool has_tools = !options.tool_jsons.empty();
     if (has_tools) {
         RenderedToolsSystemBlock preamble = render_tools_system_block(
-            options.tool_jsons, leading_instruction, reasoning_instructions);
+            options.tool_jsons, leading_instruction, reasoning_instructions, external_template,
+            options.enable_thinking);
         rendered.append(std::move(preamble.fragment));
         tool_boundaries   = std::move(preamble.tool_boundaries);
         instruction_begin = preamble.instruction_begin;
@@ -507,6 +637,7 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
     int image_count         = 0;
     int video_count         = 0;
     std::size_t media_count = 0;
+    int consecutive_tool_errors = 0;
     for (std::size_t i = 0; i < messages.size(); ++i) {
         const ChatMessage& message = messages[i];
         if (i < message_begin) { continue; }
@@ -521,6 +652,7 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
             continue;
         }
         if (message.role == ChatRole::User) {
+            if (external_template) { consecutive_tool_errors = 0; }
             rendered.append_template("<|im_start|>user\n");
             rendered.append(content);
             rendered.append_template("<|im_end|>\n");
@@ -528,12 +660,27 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
             continue;
         }
         if (message.role == ChatRole::Tool) {
+            if (external_template) {
+                consecutive_tool_errors = external_tool_error(content.text)
+                                              ? consecutive_tool_errors + 1
+                                              : 0;
+            }
             const bool opens_group = i > 0 && messages[i - 1].role != ChatRole::Tool;
             const bool closes_group =
                 i + 1 == messages.size() || messages[i + 1].role != ChatRole::Tool;
             if (opens_group) { rendered.append_template("<|im_start|>user"); }
             rendered.append_template("\n<tool_response>\n");
             rendered.append(content);
+            if (external_template && consecutive_tool_errors >= 2) {
+                rendered.append_template(
+                    "\n\n⚠️ SYSTEM WARNING: " + std::to_string(consecutive_tool_errors) +
+                    " consecutive tool errors detected. Your previous approach is incorrect. "
+                    "You MUST use a fundamentally different approach or corrected arguments.");
+            } else if (external_template && consecutive_tool_errors == 1) {
+                rendered.append_template(
+                    "\n\n⚠️ SYSTEM WARNING: The previous tool call returned an error. "
+                    "Diagnose the failure and retry with completely corrected arguments.");
+            }
             rendered.append_template("\n</tool_response>");
             if (closes_group) { rendered.append_template("<|im_end|>\n"); }
             message_boundaries[i + 1U] = rendered.size();
@@ -583,7 +730,8 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
                 } else {
                     rendered.append_template("\n");
                 }
-                rendered.append(render_tool_call(message.tool_calls[call_index], effort_template));
+                rendered.append(render_tool_call(message.tool_calls[call_index], effort_template,
+                                                  external_template));
             }
         }
         rendered.append_template("<|im_end|>\n");
