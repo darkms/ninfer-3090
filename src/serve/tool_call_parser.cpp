@@ -25,6 +25,35 @@ std::string trim_ascii(std::string_view text) {
     return std::string(text.substr(begin, end - begin));
 }
 
+std::string repair_unquoted_json_object_keys(std::string_view text) {
+    std::string repaired;
+    repaired.reserve(text.size());
+    for (std::size_t index = 0; index < text.size();) {
+        const char byte = text[index];
+        repaired.push_back(byte);
+        ++index;
+        if (byte != '{' && byte != ',') { continue; }
+        while (index < text.size() && std::isspace(static_cast<unsigned char>(text[index])) != 0) {
+            repaired.push_back(text[index++]);
+        }
+        const std::size_t key_begin = index;
+        while (index < text.size() &&
+               (std::isalnum(static_cast<unsigned char>(text[index])) != 0 || text[index] == '_' ||
+                text[index] == '-')) {
+            ++index;
+        }
+        if (index > key_begin && index < text.size() && text[index] == '"' &&
+            index + 1 < text.size() && text[index + 1] == ':') {
+            repaired.push_back('"');
+            repaired.append(text.substr(key_begin, index - key_begin));
+            ++index;
+        } else {
+            repaired.append(text.substr(key_begin, index - key_begin));
+        }
+    }
+    return repaired;
+}
+
 std::string rtrim_ascii(std::string_view text) {
     std::size_t end = text.size();
     while (end != 0 && std::isspace(static_cast<unsigned char>(text[end - 1])) != 0) { --end; }
@@ -214,9 +243,17 @@ bool parse_one_tool_call(std::string_view block, std::size_t max_name_length,
     if (function_end == std::string_view::npos) { return false; }
     const std::string_view params = block.substr(pos, function_end - pos);
     Json args                     = Json::object();
-    const std::string raw_params = trim_ascii(params);
+    std::string raw_params = trim_ascii(params);
     if (!raw_params.empty() && (raw_params.front() == '{' || raw_params.front() == '[')) {
+        constexpr std::string_view kMixedParameterClose = "</parameter>";
+        if (raw_params.ends_with(kMixedParameterClose)) {
+            raw_params = trim_ascii(std::string_view(raw_params).substr(
+                0, raw_params.size() - kMixedParameterClose.size()));
+        }
         Json parsed = Json::parse(raw_params, nullptr, false);
+        if (parsed.is_discarded()) {
+            parsed = Json::parse(repair_unquoted_json_object_keys(raw_params), nullptr, false);
+        }
         if (parsed.is_discarded() || !parsed.is_object()) { return false; }
         args = std::move(parsed);
     } else {

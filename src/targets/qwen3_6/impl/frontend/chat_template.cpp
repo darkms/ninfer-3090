@@ -357,7 +357,8 @@ bool external_tool_error(std::string_view content) {
                                  head.find("def ") != std::string_view::npos ||
                                  head.find("function ") != std::string_view::npos;
     const bool exit_code_zero = head.find("exit code: 0") != std::string_view::npos ||
-                                head.find("process exited with code 0") != std::string_view::npos;
+                                head.find("process exited with code 0") != std::string_view::npos ||
+                                head.find("command exited with code 0") != std::string_view::npos;
     const bool error_field_ok = head.find("\"error\": null") != std::string_view::npos ||
                                 head.find("\"error\":null") != std::string_view::npos ||
                                 head.find("\"error\": false") != std::string_view::npos ||
@@ -372,7 +373,8 @@ bool external_tool_error(std::string_view content) {
          head.find("command not found") != std::string_view::npos ||
          head.find("invalid syntax") != std::string_view::npos || head.find("fatal:") != std::string_view::npos ||
          ((head.find("exit code: ") != std::string_view::npos ||
-           head.find("process exited with code") != std::string_view::npos) &&
+           head.find("process exited with code") != std::string_view::npos ||
+           head.find("command exited with code") != std::string_view::npos) &&
           !exit_code_zero) ||
          head.starts_with("exception:") || head.starts_with("failed to "));
     const bool weak_error = head.find("error:") != std::string_view::npos ||
@@ -638,6 +640,8 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
     int video_count         = 0;
     std::size_t media_count = 0;
     int consecutive_tool_errors = 0;
+    std::vector<std::pair<std::string, std::string>> last_assistant_tool_calls;
+    bool suppress_thinking_after_duplicate = false;
     for (std::size_t i = 0; i < messages.size(); ++i) {
         const ChatMessage& message = messages[i];
         if (i < message_begin) { continue; }
@@ -652,7 +656,11 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
             continue;
         }
         if (message.role == ChatRole::User) {
-            if (external_template) { consecutive_tool_errors = 0; }
+            if (external_template) {
+                consecutive_tool_errors = 0;
+                last_assistant_tool_calls.clear();
+                suppress_thinking_after_duplicate = false;
+            }
             rendered.append_template("<|im_start|>user\n");
             rendered.append(content);
             rendered.append_template("<|im_end|>\n");
@@ -692,6 +700,17 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         }
 
         // assistant
+        bool duplicate_tool_call = false;
+        if (external_template && consecutive_tool_errors != 0 &&
+            message.tool_calls.size() == last_assistant_tool_calls.size() &&
+            !message.tool_calls.empty()) {
+            duplicate_tool_call = std::equal(
+                message.tool_calls.begin(), message.tool_calls.end(), last_assistant_tool_calls.begin(),
+                [](const ToolCall& call, const auto& previous) {
+                    return call.name == previous.first && call.arguments_json == previous.second;
+                });
+        }
+        if (duplicate_tool_call) { suppress_thinking_after_duplicate = true; }
         RenderedFragment reasoning;
         RenderedFragment body = content;
         if (!message.reasoning_content.empty()) {
@@ -703,7 +722,8 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         }
         reasoning = trim_ascii_whitespace(reasoning);
 
-        const bool keep_thinking = preserve_thinking || (static_cast<long>(i) > last_query_index);
+        const bool keep_thinking = !suppress_thinking_after_duplicate &&
+                                   (preserve_thinking || (static_cast<long>(i) > last_query_index));
         if (!preserve_thinking && !rewrite_checkpoint && static_cast<long>(i) > last_query_index) {
             // Closing the current turn may rewrite everything beginning with this assistant
             // segment. Keep the stable history before the opener recoverable; retaining the
@@ -736,6 +756,13 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
         }
         rendered.append_template("<|im_end|>\n");
         message_boundaries[i + 1U] = rendered.size();
+        if (external_template) {
+            last_assistant_tool_calls.clear();
+            last_assistant_tool_calls.reserve(message.tool_calls.size());
+            for (const ToolCall& call : message.tool_calls) {
+                last_assistant_tool_calls.emplace_back(call.name, call.arguments_json);
+            }
+        }
     }
 
     if (options.add_generation_prompt) {
