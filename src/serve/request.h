@@ -208,6 +208,46 @@ struct GenerationRequest {
         }
         return false;
     }
+
+    [[nodiscard]] std::optional<std::size_t> repeated_tool_cycle_period() const {
+        using ToolTurn = std::vector<std::pair<std::string, std::string>>;
+        std::vector<ToolTurn> history;
+        for (const ChatTurn& message : messages) {
+            if (message.role == ChatRole::User) {
+                history.clear();
+                continue;
+            }
+            if (message.role != ChatRole::Assistant) { continue; }
+            if (message.tool_calls.empty()) {
+                history.clear();
+                continue;
+            }
+            ToolTurn current;
+            current.reserve(message.tool_calls.size());
+            for (const ToolCall& call : message.tool_calls) {
+                current.emplace_back(call.name, call.arguments_json);
+            }
+            const std::size_t turn_count = history.size() + 1U;
+            for (std::size_t period = 1; period <= turn_count / 2U; ++period) {
+                const std::size_t first = turn_count - period * 2U;
+                bool repeated = true;
+                for (std::size_t offset = 0; offset < period; ++offset) {
+                    const ToolTurn& previous = history[first + offset];
+                    const ToolTurn& repeated_turn =
+                        first + period + offset == history.size()
+                            ? current
+                            : history[first + period + offset];
+                    if (previous != repeated_turn) {
+                        repeated = false;
+                        break;
+                    }
+                }
+                if (repeated) { return period; }
+            }
+            history.push_back(std::move(current));
+        }
+        return std::nullopt;
+    }
 };
 
 } // namespace ninfer::serve

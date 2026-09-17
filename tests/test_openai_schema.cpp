@@ -538,6 +538,38 @@ int test_parse_tool_history_messages() {
     return failures;
 }
 
+int test_repeated_tool_cycle_detection() {
+    const auto assistant = [](std::string name, std::string args) {
+        ChatTurn turn;
+        turn.role = ninfer::ChatRole::Assistant;
+        turn.tool_calls.push_back(ToolCall{"", std::move(name), std::move(args)});
+        return turn;
+    };
+    const auto tool = [] {
+        ChatTurn turn;
+        turn.role = ninfer::ChatRole::Tool;
+        return turn;
+    };
+    GenerationRequest repeated;
+    repeated.messages = {ChatTurn{.role = ninfer::ChatRole::User},
+                         assistant("bash", R"({"command":"same"})"), tool(),
+                         assistant("bash", R"({"command":"same"})"), tool()};
+    int failures = check(repeated.repeated_tool_cycle_period() == 1,
+                         "identical tool cycle was not detected at the serving boundary");
+
+    GenerationRequest alternating;
+    alternating.messages = {ChatTurn{.role = ninfer::ChatRole::User},
+                            assistant("a", "{}"), tool(), assistant("b", "{}"), tool(),
+                            assistant("a", "{}"), tool(), assistant("b", "{}"), tool()};
+    failures += check(alternating.repeated_tool_cycle_period() == 2,
+                      "alternating tool cycle was not detected at the serving boundary");
+
+    repeated.messages.push_back(ChatTurn{.role = ninfer::ChatRole::User});
+    failures += check(!repeated.repeated_tool_cycle_period(),
+                      "a new user turn did not reset tool cycle detection");
+    return failures;
+}
+
 int test_parse_stop_and_max_tokens() {
     int failures          = 0;
     Json body             = {{"model", "m"},
@@ -778,6 +810,7 @@ int main() {
     failures += test_reject_unsupported();
     failures += test_parse_function_tools_and_choices();
     failures += test_parse_tool_history_messages();
+    failures += test_repeated_tool_cycle_detection();
     failures += test_parse_stop_and_max_tokens();
     failures += test_parse_sampling_carried();
     failures += test_response_serialization();
