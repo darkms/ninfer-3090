@@ -14,6 +14,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace ninfer::serve {
@@ -90,6 +91,10 @@ ApiError request_error_to_api_error(const ninfer::RequestError& exception) {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+constexpr std::string_view kLoopRecoveryMarker =
+    "[NInfer loop recovery: a repeated tool-call cycle was detected; continue with a different "
+    "action or provide a final answer.]\n\n";
 
 [[noreturn]] void throw_preparation_cancelled();
 
@@ -184,6 +189,27 @@ ninfer::OwnedMedia acquire_media(const ContentPart& part, Clock::time_point dead
 
 [[noreturn]] void throw_request_error(const ninfer::RequestError& exception) {
     throw ApiException(request_error_to_api_error(exception));
+}
+
+bool same_tool_loop_turn(const std::vector<ToolCall>& actual,
+                         const ninfer::ToolLoopTurn& expected) {
+    ninfer::ToolLoopTurn normalized;
+    normalized.reserve(actual.size());
+    for (const ToolCall& call : actual) {
+        normalized.push_back(ninfer::make_tool_loop_call(call.name, call.arguments_json));
+    }
+    return ninfer::same_tool_loop_turn(normalized, expected);
+}
+
+[[noreturn]] void throw_tool_loop_error(std::size_t period) {
+    ApiError error;
+    error.status  = 409;
+    error.type    = "loop_detected";
+    error.param   = "messages";
+    error.code    = "repeated_tool_call_cycle";
+    error.message = "the model repeated the same tool-call cycle after loop recovery guidance "
+                    "(cycle length " + std::to_string(period) + ")";
+    throw ApiException(std::move(error));
 }
 
 void check_preparation_control(Clock::time_point deadline,
@@ -329,16 +355,14 @@ PreparedRequest GenerationService::prepare_impl(const GenerationRequest& request
                                                 ContextCacheHints context_cache,
                                                 CacheParticipation cache_participation,
                                                 DeadlinePolicy deadline_policy) const {
-    const std::optional<std::size_t> loop_period = request.repeated_tool_cycle_period();
-    // The model already repeated a complete tool-call cycle. Keep the original request, including
-    // tool definitions and the full history, so the stable prompt prefix remains cacheable. The
-    // recovery turn is text-only at the response boundary below, so another parsed tool call cannot
-    // prolong the loop. The frontend still renders the prior tool trace and its warning.
+    const std::optional<ninfer::ToolLoopDetection> loop_recovery = request.repeated_tool_cycle();
+    // Keep the original request, tools, and full history intact. The frontend adds the corrective
+    // context after the stable history prefix; the response boundary below decides whether the
+    // model actually recovered or repeated the expected next tool-call turn.
     PreparedRequest prepared;
     prepared.include_usage        = request.include_usage;
-    prepared.tool_capable =
-        !loop_period && (request.uses_tools() || request.has_tool_history());
-    prepared.suppress_tool_calls  = loop_period.has_value();
+    prepared.tool_capable = request.uses_tools() || request.has_tool_history();
+    prepared.loop_recovery = loop_recovery;
     prepared.tool_name_max_length = request.tool_name_max_length;
     prepared.tool_argument_types  = build_tool_argument_type_contracts(request);
     const ResolvedPromptSemantics semantics =
@@ -429,10 +453,11 @@ int GenerationService::count_prompt_tokens(const GenerationRequest& request,
 
 GenerationOutcome GenerationService::run(PreparedRequest& prepared, const StreamSink* sink,
                                          std::function<bool()> is_cancelled) {
+    // A recovery pass must be buffered: if it repeats the expected call, the streaming protocol
+    // must not expose a partial assistant response before returning loop_detected.
     std::unique_ptr<ServiceOutputSink> output_sink;
-    if (sink != nullptr) {
-        output_sink = std::make_unique<ServiceOutputSink>(
-            *sink, prepared.tool_capable || prepared.suppress_tool_calls);
+    if (sink != nullptr && !prepared.loop_recovery) {
+        output_sink = std::make_unique<ServiceOutputSink>(*sink, prepared.tool_capable);
     }
     ninfer::OutputSink* public_sink = output_sink.get();
     ninfer::CancellationView cancellation;
@@ -481,20 +506,14 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
 
     bool is_tool_call_response     = false;
     bool tool_call_in_reasoning    = false;
-    if (prepared.tool_capable || prepared.suppress_tool_calls) {
+    if (prepared.tool_capable) {
         ParsedToolCallOutput parsed = parse_qwen_tool_call_output(
             outcome.text, prepared.tool_name_max_length, prepared.tool_argument_types);
-        if (prepared.tool_capable) {
-            outcome.text          = std::move(parsed.content);
-            is_tool_call_response = parsed.is_tool_call_response;
-        } else if (parsed.is_tool_call_response) {
-            // Recovery is text-only: retain any answer before a replayed tool marker, but never
-            // expose the replay as executable tool output to the protocol adapter.
-            outcome.text = std::move(parsed.content);
-        }
-        if (prepared.tool_capable && is_tool_call_response) {
+        outcome.text          = std::move(parsed.content);
+        is_tool_call_response = parsed.is_tool_call_response;
+        if (is_tool_call_response) {
             outcome.tool_calls = std::move(parsed.tool_calls);
-        } else if (prepared.tool_capable) {
+        } else {
             // Some Qwen3.6 turns emit the tool marker before the closing think marker. The
             // decoder consequently places it in reasoning_content; treat that exact suffix as
             // the same protocol response instead of exposing raw XML to OpenAI clients.
@@ -508,10 +527,16 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
             }
         }
     }
+    if (prepared.loop_recovery) {
+        if (is_tool_call_response &&
+            same_tool_loop_turn(outcome.tool_calls, prepared.loop_recovery->expected_next)) {
+            throw_tool_loop_error(prepared.loop_recovery->period);
+        }
+        outcome.text.insert(0, kLoopRecoveryMarker);
+    }
     if (output_sink) {
-        outcome.streamed_content_bytes = output_sink->finish(
-            is_tool_call_response || prepared.suppress_tool_calls,
-            tool_call_in_reasoning || prepared.suppress_tool_calls);
+        outcome.streamed_content_bytes = output_sink->finish(is_tool_call_response,
+                                                              tool_call_in_reasoning);
     }
     return outcome;
 }

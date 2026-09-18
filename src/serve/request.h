@@ -210,7 +210,7 @@ struct GenerationRequest {
         return false;
     }
 
-    [[nodiscard]] std::optional<std::size_t> repeated_tool_cycle_period() const {
+    [[nodiscard]] std::optional<ninfer::ToolLoopDetection> repeated_tool_cycle() const {
         // Only the next model turn after a tool result can be the repeated-call recovery turn.
         // A user/developer follow-up must re-enable tools even when older history contains a loop.
         if (messages.empty() || messages.back().role != ChatRole::Tool) { return std::nullopt; }
@@ -236,7 +236,12 @@ struct GenerationRequest {
         if (history.size() < 2U) { return std::nullopt; }
         ninfer::ToolLoopTurn current = std::move(history.back());
         history.pop_back();
-        return ninfer::repeated_tool_cycle_period(history, current);
+        return ninfer::repeated_tool_cycle(history, current);
+    }
+
+    [[nodiscard]] std::optional<std::size_t> repeated_tool_cycle_period() const {
+        const auto detection = repeated_tool_cycle();
+        return detection ? std::optional<std::size_t>(detection->period) : std::nullopt;
     }
 };
 

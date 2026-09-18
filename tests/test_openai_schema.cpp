@@ -556,6 +556,15 @@ int test_repeated_tool_cycle_detection() {
                          assistant("bash", R"({"command":"same"})"), tool()};
     int failures = check(repeated.repeated_tool_cycle_period() == 1,
                          "identical tool cycle was not detected at the serving boundary");
+    const auto repeated_detection = repeated.repeated_tool_cycle();
+    failures += check(repeated_detection && repeated_detection->period == 1 &&
+                          repeated_detection->expected_next.size() == 1 &&
+                          repeated_detection->expected_next[0].first == "bash",
+                      "recovery did not identify the expected next tool call");
+    failures += check(repeated_detection &&
+                          ninfer::same_tool_loop_turn(repeated_detection->expected_next,
+                                                      repeated_detection->expected_next),
+                      "identical recovery tool turns did not compare equal");
 
     GenerationRequest alternating;
     alternating.messages = {ChatTurn{.role = ninfer::ChatRole::User},
@@ -574,6 +583,14 @@ int test_repeated_tool_cycle_detection() {
     repeated.messages.push_back(ChatTurn{.role = ninfer::ChatRole::User});
     failures += check(!repeated.repeated_tool_cycle_period(),
                       "a new user turn did not reset tool cycle detection");
+
+    GenerationRequest interrupted;
+    interrupted.messages = {ChatTurn{.role = ninfer::ChatRole::User},
+                            assistant("bash", R"({"command":"same"})"), tool(),
+                            assistant("bash", R"({"command":"same"})"), tool(),
+                            assistant("kubectl", R"({"command":"different"})"), tool()};
+    failures += check(!interrupted.repeated_tool_cycle_period(),
+                      "a different tool call did not reset the active loop sequence");
 
     GenerationRequest instruction_reset;
     instruction_reset.messages = {

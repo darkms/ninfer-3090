@@ -15,6 +15,11 @@ namespace ninfer {
 using ToolLoopCall = std::pair<std::string, std::string>;
 using ToolLoopTurn = std::vector<ToolLoopCall>;
 
+struct ToolLoopDetection {
+    std::size_t period = 0;
+    ToolLoopTurn expected_next;
+};
+
 inline std::string canonical_tool_loop_arguments(std::string_view arguments_json) {
     const nlohmann::json parsed = nlohmann::json::parse(arguments_json, nullptr, false);
     return parsed.is_discarded() ? std::string(arguments_json) : parsed.dump();
@@ -24,9 +29,12 @@ inline ToolLoopCall make_tool_loop_call(std::string_view name, std::string_view 
     return {std::string(name), canonical_tool_loop_arguments(arguments_json)};
 }
 
-inline std::optional<std::size_t>
-repeated_tool_cycle_period(const std::vector<ToolLoopTurn>& history,
-                           const ToolLoopTurn& current) {
+inline bool same_tool_loop_turn(const ToolLoopTurn& actual, const ToolLoopTurn& expected) {
+    return actual == expected;
+}
+
+inline std::optional<ToolLoopDetection>
+repeated_tool_cycle(const std::vector<ToolLoopTurn>& history, const ToolLoopTurn& current) {
     if (current.empty()) { return std::nullopt; }
 
     // ponytail: bounded O(n^2) scan; the detector is deliberately small and only needs the
@@ -51,9 +59,24 @@ repeated_tool_cycle_period(const std::vector<ToolLoopTurn>& history,
                 break;
             }
         }
-        if (repeated) { return period; }
+        if (repeated) {
+            ToolLoopDetection detection;
+            detection.period = period;
+            const std::size_t expected_index = turn_count - period;
+            detection.expected_next = expected_index == history_size
+                                          ? current
+                                          : history[history_begin + expected_index];
+            return detection;
+        }
     }
     return std::nullopt;
+}
+
+inline std::optional<std::size_t>
+repeated_tool_cycle_period(const std::vector<ToolLoopTurn>& history,
+                           const ToolLoopTurn& current) {
+    const auto detection = repeated_tool_cycle(history, current);
+    return detection ? std::optional<std::size_t>(detection->period) : std::nullopt;
 }
 
 } // namespace ninfer

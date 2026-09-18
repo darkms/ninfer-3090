@@ -78,7 +78,7 @@ struct PreparedRequest {
     int prompt_tokens                = 0;
     bool include_usage               = false;
     bool tool_capable                = false;
-    bool suppress_tool_calls         = false;
+    std::optional<ninfer::ToolLoopDetection> loop_recovery;
     std::size_t tool_name_max_length = 64;
     ToolArgumentTypeContracts tool_argument_types;
 
