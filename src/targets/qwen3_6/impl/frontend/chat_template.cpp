@@ -367,11 +367,19 @@ bool external_tool_error(std::string_view content) {
                                 head.find("\"error\":false") != std::string_view::npos ||
                                 head.find("\"error\": \"\"") != std::string_view::npos ||
                                 head.find("\"error\":\"\"") != std::string_view::npos;
+    // `kubectl logs --tail` and similar tools commonly omit the traceback header while
+    // retaining Python stack frames and the terminal exception. Treat that tail as an error;
+    // checking both markers avoids classifying ordinary source/code output as a failure.
+    const bool python_traceback_tail =
+        lower.find("file \"") != std::string::npos &&
+        lower.find(", line ") != std::string::npos &&
+        (lower.find("error") != std::string::npos || lower.find("exception") != std::string::npos);
     const bool strong_error =
         ((head.find("\"error\":") != std::string_view::npos && !error_field_ok) ||
          head.find("\"status\": \"error\"") != std::string_view::npos ||
          head.find("\"status\":\"error\"") != std::string_view::npos ||
          head.find("traceback (most recent call last):") != std::string_view::npos ||
+         python_traceback_tail ||
          head.find("command not found") != std::string_view::npos ||
          head.find("invalid syntax") != std::string_view::npos || head.find("fatal:") != std::string_view::npos ||
          head.find("timed out") != std::string_view::npos ||
