@@ -240,8 +240,13 @@ bool parse_one_tool_call(std::string_view block, std::size_t max_name_length,
     pos = name_end + 1;
 
     const std::size_t function_end = block.find(kFunctionClose, pos);
-    if (function_end == std::string_view::npos) { return false; }
-    const std::string_view params = block.substr(pos, function_end - pos);
+    // Some Qwen3.6 generations emit the unambiguous raw-JSON shorthand
+    // `<function=name>\n{...}` and close only the surrounding tool_call.
+    // Keep the strict XML grammar for parameter tags; accept the shorthand
+    // only when the complete remainder is a JSON object.
+    const bool raw_json_shorthand = function_end == std::string_view::npos;
+    const std::string_view params =
+        block.substr(pos, raw_json_shorthand ? block.size() - pos : function_end - pos);
     Json args                     = Json::object();
     std::string raw_params = trim_ascii(params);
     if (!raw_params.empty() && (raw_params.front() == '{' || raw_params.front() == '[')) {
@@ -265,7 +270,7 @@ bool parse_one_tool_call(std::string_view block, std::size_t max_name_length,
         }
     }
 
-    pos = function_end + kFunctionClose.size();
+    pos = raw_json_shorthand ? block.size() : function_end + kFunctionClose.size();
     skip_ws(block, pos);
     if (pos != block.size()) { return false; }
 

@@ -132,6 +132,25 @@ int test_external_template_raw_json_payload() {
     return failures;
 }
 
+int test_external_template_raw_json_without_function_close() {
+    const auto parsed = ninfer::serve::parse_qwen_tool_call_output(
+        "<tool_call>\n"
+        "<function=bash>\n"
+        "{\"command\":\"ls -la C:/git/home-lab/surfsense/\"}\n"
+        "</tool_call>",
+        64, kNoTypeContracts);
+
+    int failures = 0;
+    failures += check(parsed.is_tool_call_response && parsed.tool_calls.size() == 1,
+                      "raw JSON shorthand without function close was not parsed");
+    failures += check(parsed.tool_calls.at(0).name == "bash",
+                      "raw JSON shorthand function name was not parsed");
+    const Json args = Json::parse(parsed.tool_calls.at(0).arguments_json);
+    failures += check(args.at("command") == "ls -la C:/git/home-lab/surfsense/",
+                      "raw JSON shorthand argument was not decoded");
+    return failures;
+}
+
 int test_mixed_json_parameter_payload() {
     const auto parsed = ninfer::serve::parse_qwen_tool_call_output(
         "<tool_call>\n"
@@ -395,6 +414,7 @@ int main() {
     failures += test_malformed_falls_back_to_text();
     failures += test_reasoning_channel_tool_payload();
     failures += test_external_template_raw_json_payload();
+    failures += test_external_template_raw_json_without_function_close();
     failures += test_mixed_json_parameter_payload();
     failures += test_suffix_after_tool_falls_back_to_text();
     failures += test_configured_name_limit();
