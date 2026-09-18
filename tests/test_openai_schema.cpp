@@ -564,9 +564,37 @@ int test_repeated_tool_cycle_detection() {
     failures += check(alternating.repeated_tool_cycle_period() == 2,
                       "alternating tool cycle was not detected at the serving boundary");
 
+    GenerationRequest formatted;
+    formatted.messages = {ChatTurn{.role = ninfer::ChatRole::User},
+                          assistant("bash", R"({"command":"same","timeout":30})"), tool(),
+                          assistant("bash", R"({ "timeout": 30, "command": "same" })"), tool()};
+    failures += check(formatted.repeated_tool_cycle_period() == 1,
+                      "equivalent JSON tool arguments did not detect a repeated cycle");
+
     repeated.messages.push_back(ChatTurn{.role = ninfer::ChatRole::User});
     failures += check(!repeated.repeated_tool_cycle_period(),
                       "a new user turn did not reset tool cycle detection");
+
+    GenerationRequest instruction_reset;
+    instruction_reset.messages = {
+        ChatTurn{.role = ninfer::ChatRole::User},
+        assistant("bash", R"({"command":"same"})"),
+        tool(),
+        assistant("bash", R"({"command":"same"})"),
+        tool(),
+        ChatTurn{.role = ninfer::ChatRole::Developer},
+        assistant("bash", R"({"command":"same"})"),
+        tool(),
+    };
+    failures += check(!instruction_reset.repeated_tool_cycle_period(),
+                      "a developer turn did not reset tool cycle detection");
+
+    GenerationRequest stale;
+    stale.messages = {ChatTurn{.role = ninfer::ChatRole::User},
+                      assistant("bash", R"({"command":"same"})"), tool(),
+                      assistant("bash", R"({"command":"same"})")};
+    failures += check(!stale.repeated_tool_cycle_period(),
+                      "an unfinished tool turn incorrectly activated loop recovery");
     return failures;
 }
 

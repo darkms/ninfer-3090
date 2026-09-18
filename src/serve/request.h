@@ -2,6 +2,7 @@
 
 #include "product/media_acquire/source.h"
 
+#include <ninfer/tool_loop.h>
 #include <ninfer/types.h>
 
 // Internal, wire-format-independent representation of a generation request.
@@ -210,10 +211,13 @@ struct GenerationRequest {
     }
 
     [[nodiscard]] std::optional<std::size_t> repeated_tool_cycle_period() const {
-        using ToolTurn = std::vector<std::pair<std::string, std::string>>;
-        std::vector<ToolTurn> history;
+        // Only the next model turn after a tool result can be the repeated-call recovery turn.
+        // A user/developer follow-up must re-enable tools even when older history contains a loop.
+        if (messages.empty() || messages.back().role != ChatRole::Tool) { return std::nullopt; }
+        std::vector<ninfer::ToolLoopTurn> history;
         for (const ChatTurn& message : messages) {
-            if (message.role == ChatRole::User) {
+            if (message.role == ChatRole::User || message.role == ChatRole::Developer ||
+                message.role == ChatRole::System) {
                 history.clear();
                 continue;
             }
@@ -222,31 +226,17 @@ struct GenerationRequest {
                 history.clear();
                 continue;
             }
-            ToolTurn current;
+            ninfer::ToolLoopTurn current;
             current.reserve(message.tool_calls.size());
             for (const ToolCall& call : message.tool_calls) {
-                current.emplace_back(call.name, call.arguments_json);
-            }
-            const std::size_t turn_count = history.size() + 1U;
-            for (std::size_t period = 1; period <= turn_count / 2U; ++period) {
-                const std::size_t first = turn_count - period * 2U;
-                bool repeated = true;
-                for (std::size_t offset = 0; offset < period; ++offset) {
-                    const ToolTurn& previous = history[first + offset];
-                    const ToolTurn& repeated_turn =
-                        first + period + offset == history.size()
-                            ? current
-                            : history[first + period + offset];
-                    if (previous != repeated_turn) {
-                        repeated = false;
-                        break;
-                    }
-                }
-                if (repeated) { return period; }
+                current.push_back(ninfer::make_tool_loop_call(call.name, call.arguments_json));
             }
             history.push_back(std::move(current));
         }
-        return std::nullopt;
+        if (history.size() < 2U) { return std::nullopt; }
+        ninfer::ToolLoopTurn current = std::move(history.back());
+        history.pop_back();
+        return ninfer::repeated_tool_cycle_period(history, current);
     }
 };
 

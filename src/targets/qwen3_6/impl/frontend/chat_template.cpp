@@ -2,7 +2,7 @@
 
 #include "targets/qwen3_6/impl/frontend/digest.h"
 
-#include <nlohmann/json.hpp>
+#include <ninfer/tool_loop.h>
 
 #include <algorithm>
 #include <array>
@@ -388,51 +388,13 @@ bool external_tool_error(std::string_view content) {
     return !is_code_or_grep && (strong_error || (weak_error && !weak_suppressed));
 }
 
-using ToolCallSignature = std::pair<std::string, std::string>;
-using ToolCallTurn      = std::vector<ToolCallSignature>;
-
-std::string canonical_tool_arguments(std::string_view arguments_json) {
-    const nlohmann::json parsed = nlohmann::json::parse(arguments_json, nullptr, false);
-    return parsed.is_discarded() ? std::string(arguments_json) : parsed.dump();
-}
-
-ToolCallTurn tool_call_turn_signature(const std::vector<ToolCall>& tool_calls) {
-    ToolCallTurn signature;
+ninfer::ToolLoopTurn tool_call_turn_signature(const std::vector<ToolCall>& tool_calls) {
+    ninfer::ToolLoopTurn signature;
     signature.reserve(tool_calls.size());
     for (const ToolCall& call : tool_calls) {
-        signature.emplace_back(call.name, canonical_tool_arguments(call.arguments_json));
+        signature.push_back(ninfer::make_tool_loop_call(call.name, call.arguments_json));
     }
     return signature;
-}
-
-bool same_tool_call_turn(const ToolCallTurn& left, const ToolCallTurn& right) {
-    return left == right;
-}
-
-std::optional<std::size_t> repeated_tool_cycle_period(const std::vector<ToolCallTurn>& history,
-                                                      const ToolCallTurn& current) {
-    if (current.empty()) { return std::nullopt; }
-    const std::size_t turn_count = history.size() + 1U;
-    // ponytail: O(n^2) over assistant tool turns; histories are bounded by the request context,
-    // and keeping every period avoids a false negative for longer but otherwise valid cycles.
-    const std::size_t max_period = turn_count / 2U;
-    for (std::size_t period = 1; period <= max_period; ++period) {
-        const std::size_t first = turn_count - period * 2U;
-        bool repeated = true;
-        for (std::size_t offset = 0; offset < period; ++offset) {
-            const ToolCallTurn& previous = history[first + offset];
-            const std::size_t repeated_index = first + period + offset;
-            const ToolCallTurn& repeated_turn = repeated_index == history.size()
-                                                     ? current
-                                                     : history[repeated_index];
-            if (!same_tool_call_turn(previous, repeated_turn)) {
-                repeated = false;
-                break;
-            }
-        }
-        if (repeated) { return period; }
-    }
-    return std::nullopt;
 }
 
 std::string parameter_text(const OrderedJson& value) {
@@ -691,13 +653,18 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
     int video_count         = 0;
     std::size_t media_count = 0;
     int consecutive_tool_errors = 0;
-    std::vector<ToolCallTurn> assistant_tool_call_history;
+    std::vector<ninfer::ToolLoopTurn> assistant_tool_call_history;
     std::optional<std::size_t> pending_tool_loop_period;
     bool loop_warning_emitted = false;
     for (std::size_t i = 0; i < messages.size(); ++i) {
         const ChatMessage& message = messages[i];
         if (i < message_begin) { continue; }
-        if (is_instruction_role(message.role)) { validate_instruction_message(message); }
+        if (is_instruction_role(message.role)) {
+            validate_instruction_message(message);
+            assistant_tool_call_history.clear();
+            pending_tool_loop_period.reset();
+            loop_warning_emitted = false;
+        }
         const RenderedFragment content = trim_ascii_whitespace(message.rendered_content(
             options.add_vision_id, &image_count, &video_count, &media_count));
         if (is_instruction_role(message.role)) {
@@ -771,10 +738,10 @@ RenderedChat CompiledChatTemplate::render(const std::vector<ChatMessage>& messag
             pending_tool_loop_period.reset();
             loop_warning_emitted = false;
         } else {
-            const ToolCallTurn current_tool_calls =
+            const ninfer::ToolLoopTurn current_tool_calls =
                 tool_call_turn_signature(message.tool_calls);
-            pending_tool_loop_period =
-                repeated_tool_cycle_period(assistant_tool_call_history, current_tool_calls);
+            pending_tool_loop_period = ninfer::repeated_tool_cycle_period(
+                assistant_tool_call_history, current_tool_calls);
             loop_warning_emitted = false;
             assistant_tool_call_history.push_back(current_tool_calls);
         }

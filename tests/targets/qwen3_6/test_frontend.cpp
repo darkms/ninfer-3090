@@ -949,6 +949,19 @@ int test_generic_tool_loop_warning() {
                       "alternating successful tool loop did not produce a warning");
     failures += check(alternating.find("cycle length 2") != std::string::npos,
                       "alternating tool loop did not report its period");
+
+    const std::string reset = render_chat_text(
+        {chat_message(ninfer::ChatRole::User, "question"),
+         assistant_call("lookup", R"({"city":"Paris"})"),
+         chat_message(ninfer::ChatRole::Tool, "ok"),
+         assistant_call("lookup", R"({"city":"Paris"})"),
+         chat_message(ninfer::ChatRole::Tool, "ok"),
+         chat_message(ninfer::ChatRole::Developer, "new policy"),
+         assistant_call("lookup", R"({"city":"Paris"})"),
+         chat_message(ninfer::ChatRole::Tool, "ok")},
+        options);
+    failures += check(reset.find("LOOP_DETECTED") == std::string::npos,
+                      "developer turn did not reset the frontend tool-loop detector");
     return failures;
 }
 
