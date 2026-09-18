@@ -151,6 +151,34 @@ int test_external_template_raw_json_without_function_close() {
     return failures;
 }
 
+int test_external_template_malformed_parameter_json_shorthand() {
+    const auto parsed = ninfer::serve::parse_qwen_tool_call_output(
+        "<tool_call>\n"
+        "<function=bash>\n"
+        "<parameter=command\":\"ls -la /c/git/home-lab/surfsense/\"}</function>\n"
+        "</tool_call>\n"
+        "<tool_call>\n"
+        "<function=bash>\n"
+        "<parameter=command\":\"git status --short\"}</function>\n"
+        "</tool_call>\n"
+        "<tool_call>\n"
+        "<function=bash>\n"
+        "<parameter=command\":\"printf probe\"}</function>\n"
+        "</tool_call>",
+        64, kNoTypeContracts);
+
+    int failures = 0;
+    failures += check(parsed.is_tool_call_response && parsed.tool_calls.size() == 3,
+                      "malformed parameter JSON shorthand was not parsed as three calls");
+    for (const auto& call : parsed.tool_calls) {
+        failures += check(call.name == "bash", "malformed shorthand function name changed");
+        const Json args = Json::parse(call.arguments_json);
+        failures += check(args.contains("command") && args.at("command").is_string(),
+                          "malformed shorthand command argument was not decoded");
+    }
+    return failures;
+}
+
 int test_mixed_json_parameter_payload() {
     const auto parsed = ninfer::serve::parse_qwen_tool_call_output(
         "<tool_call>\n"
@@ -415,6 +443,7 @@ int main() {
     failures += test_reasoning_channel_tool_payload();
     failures += test_external_template_raw_json_payload();
     failures += test_external_template_raw_json_without_function_close();
+    failures += test_external_template_malformed_parameter_json_shorthand();
     failures += test_mixed_json_parameter_payload();
     failures += test_suffix_after_tool_falls_back_to_text();
     failures += test_configured_name_limit();

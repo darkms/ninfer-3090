@@ -225,6 +225,8 @@ bool parse_parameter(std::string_view inner, std::size_t& pos, Json& args,
     return true;
 }
 
+bool parse_parameter_json_shorthand(std::string_view text, Json& args);
+
 bool parse_one_tool_call(std::string_view block, std::size_t max_name_length,
                          const ToolArgumentTypeContracts& contracts, ToolCall& out) {
     constexpr std::string_view kFunctionOpen  = "<function=";
@@ -261,6 +263,8 @@ bool parse_one_tool_call(std::string_view block, std::size_t max_name_length,
         }
         if (parsed.is_discarded() || !parsed.is_object()) { return false; }
         args = std::move(parsed);
+    } else if (parse_parameter_json_shorthand(raw_params, args)) {
+        // Compatibility form: <parameter=name":"value"}.
     } else {
         std::size_t param_pos = 0;
         for (;;) {
@@ -277,6 +281,27 @@ bool parse_one_tool_call(std::string_view block, std::size_t max_name_length,
     out.id             = new_tool_call_id();
     out.name           = name;
     out.arguments_json = args.dump();
+    return true;
+}
+
+bool parse_parameter_json_shorthand(std::string_view text, Json& args) {
+    constexpr std::string_view kParameterOpen = "<parameter=";
+    if (!text.starts_with(kParameterOpen)) { return false; }
+
+    const std::size_t name_begin = kParameterOpen.size();
+    const std::size_t name_end   = text.find("\":", name_begin);
+    if (name_end == std::string_view::npos || name_end == name_begin) { return false; }
+
+    std::string normalized;
+    normalized.reserve(text.size() + 3);
+    normalized.append("{\"");
+    normalized.append(text.substr(name_begin, name_end - name_begin));
+    normalized.append("\":");
+    normalized.append(text.substr(name_end + 2));
+
+    Json parsed = Json::parse(normalized, nullptr, false);
+    if (parsed.is_discarded() || !parsed.is_object()) { return false; }
+    args = std::move(parsed);
     return true;
 }
 
